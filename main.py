@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+import collections
 from hashlib import md5
 from time import localtime
 from urllib.request import urlopen
@@ -213,6 +214,41 @@ def restore_previous_version(aws_s3_client, bucket_name, file_name):
         logger.error(e)
         return False
 
+def organize_files_by_extension(aws_s3_client, bucket_name):
+    try:
+        response = aws_s3_client.list_objects_v2(Bucket=bucket_name)
+        if 'Contents' not in response:
+            logger.info("Bucket is empty or inaccessible.")
+            return
+
+        objects = response['Contents']
+        extension_counts = collections.defaultdict(int)
+
+        for obj in objects:
+            key = obj['Key']
+            if '/' in key:
+                continue  # Skip already organized files
+
+            extension = key.split('.')[-1].lower()
+            new_key = f"{extension}/{key}"
+
+            # Move the file to the new key (copy then delete original)
+            copy_source = {'Bucket': bucket_name, 'Key': key}
+            try:
+                aws_s3_client.copy_object(CopySource=copy_source, Bucket=bucket_name, Key=new_key)
+                aws_s3_client.delete_object(Bucket=bucket_name, Key=key)
+                extension_counts[extension] += 1
+                logger.info(f"Moved {key} to {new_key}")
+            except ClientError as e:
+                logger.error(f"Failed to move {key}: {e}")
+
+        print("\nOrganize Summary:")
+        for ext, count in extension_counts.items():
+            print(f"{ext} - {count}")
+
+    except ClientError as e:
+        logger.error("Failed to organize files: %s", e)
+
 def main():
     parser = argparse.ArgumentParser(description="Unified S3 CLI Tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -271,6 +307,9 @@ def main():
     parser_restore_version.add_argument("bucket_name")
     parser_restore_version.add_argument("file_name")
 
+    parser_organize = subparsers.add_parser("organize", help="Organize files in the bucket by extension")
+    parser_organize.add_argument("bucket_name", help="Bucket containing the files to organize")
+
     args = parser.parse_args()
     client = init_client()
 
@@ -309,6 +348,8 @@ def main():
         list_file_versions(client, args.bucket_name, args.file_name)
     elif args.command == "restore_version":
         restore_previous_version(client, args.bucket_name, args.file_name)
+    elif args.command == "organize":
+        organize_files_by_extension(client, args.bucket_name)
 
 if __name__ == "__main__":
     main()
